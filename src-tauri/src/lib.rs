@@ -97,6 +97,8 @@ mod install_features;
 #[cfg(desktop)]
 mod installer_handoff;
 #[cfg(desktop)]
+mod update_platform;
+#[cfg(desktop)]
 mod media_controls;
 mod modal_overlay;
 #[cfg(desktop)]
@@ -1270,6 +1272,7 @@ pub fn run() {
             }
         })
         .invoke_handler(desktop_invoke_handler(tauri::generate_handler![
+            update_platform::updater_package_kind,
             games::games_pokemon,
             games::games_scan_steam,
             games::steam_shortcut_commands::games_scan_steam_shortcuts,

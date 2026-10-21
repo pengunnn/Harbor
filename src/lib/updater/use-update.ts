@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from "react";
 import { check } from "@tauri-apps/plugin-updater";
 import { isContextReview } from "@/lib/context-review";
+import { invoke } from "@tauri-apps/api/core";
+import { isLinuxDesktop } from "@/lib/platform";
 import { HARBOR_API_BASE } from "@/lib/config/endpoints";
 import { t } from "@/lib/i18n";
 import {
@@ -283,6 +285,76 @@ export async function checkForUpdate(manual = false): Promise<void> {
   });
   let candidate: UpdateHandle | null = null;
   try {
+    if (isLinuxDesktop()) {
+      const packageKind = await invoke<string>("updater_package_kind");
+      if (!currentRequest(request, selected)) return;
+
+      if (packageKind !== "appimage") {
+        set({
+          status: "unavailable",
+          error:
+            packageKind === "flatpak"
+              ? t("Update this installation through its Flatpak source.")
+              : t("In-app updates are currently supported only for AppImage installations on Linux."),
+        });
+        return;
+      }
+
+      if (selected === "experimental") {
+        set({
+          status: "unavailable",
+          error: t("Experimental in-app updates are not supported on Linux yet."),
+        });
+        return;
+      }
+
+      const buildChannel = import.meta.env.VITE_HARBOR_LINUX_UPDATE_CHANNEL;
+
+      if (buildChannel !== "stable" && buildChannel !== "beta") {
+        set({
+          status: "unavailable",
+          error: t("This Linux build is not configured for in-app updates."),
+        });
+        return;
+      }
+
+      if (selected !== buildChannel) {
+        set({
+          status: "unavailable",
+          error: t("Select this AppImage's release channel to check for updates. Switching channels is not supported yet."),
+        });
+        return;
+      }
+
+      candidate = (await check({ timeout: 15_000 })) as UpdateHandle | null;
+      if (!currentRequest(request, selected)) return;
+
+      if (!candidate) {
+        set({
+          status: "uptodate",
+          version: null,
+          notes: null,
+          handoff: null,
+        });
+        return;
+      }
+
+      const update = candidate;
+      const dismissed = readDismissed(selected);
+      handle = update;
+      candidate = null;
+
+      set({
+        status: "available",
+        version: update.version,
+        notes: update.body ?? null,
+        handoff: null,
+        dismissed,
+        panelOpen: manual || dismissed !== update.version,
+      });
+      return;
+    }
+
     if (selected === "experimental") {
       await refreshBetaReturnContext();
       if (!currentRequest(request, selected)) return;
@@ -730,6 +802,26 @@ export async function openManualDownload(): Promise<void> {
     return;
   }
   const { openUrl } = await import("@/lib/window");
+
+  if (isLinuxDesktop()) {
+    const repository =
+      import.meta.env.VITE_HARBOR_LINUX_UPDATE_REPOSITORY?.trim();
+
+    if (
+      !repository ||
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)
+    ) {
+      set({
+        status: "unavailable",
+        error: t("This Linux build has no configured manual download page."),
+      });
+      return;
+    }
+
+    openUrl(`https://github.com/${repository}/releases`);
+    return;
+  }
+
   let target = HARBOR_API_BASE;
   try {
     const { safeFetch } = await import("@/lib/safe-fetch");
