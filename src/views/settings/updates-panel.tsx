@@ -37,7 +37,21 @@ export function UpdatesPanel() {
         </Section>
       )}
 
-      {(experimentalAccess || experimentalInstalled) && <ExperimentalBuildsSection />}
+      {isTauri && isLinuxDesktop() && (
+        <Section
+          title={t("Updates")}
+          subtitle={t(
+            "Supported AppImage builds check their configured Linux update feed. Select the channel matching your AppImage. Switching between release channels is not supported yet.",
+          )}
+        >
+          <UpdatesRow />
+          <BetaChannelRow />
+        </Section>
+      )}
+
+      {!isLinuxDesktop() && (experimentalAccess || experimentalInstalled) && (
+        <ExperimentalBuildsSection />
+      )}
 
       <Section
         title={t("Backup & restore")}

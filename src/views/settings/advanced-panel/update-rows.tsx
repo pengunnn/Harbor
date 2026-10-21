@@ -1,6 +1,7 @@
 import { Blocks, Download, FlaskConical, Loader2, RotateCw } from "../icons";
 import { useEffect, useId, useState } from "react";
 import { useSettings } from "@/lib/settings";
+import { isLinuxDesktop } from "@/lib/platform";
 import {
   readChannelPreference,
   selectedUpdateChannel,
@@ -49,9 +50,15 @@ export function BetaChannelRow() {
     >
       <ToggleRow
         label={t("Get beta updates")}
-        sub={t(
-          "Receive early builds with the newest fixes before they reach the stable release. Betas can be rough around the edges; switch this off to return to stable at the next update.",
-        )}
+        sub={
+          isLinuxDesktop()
+            ? t(
+                "Enable this for a beta AppImage; leave it disabled for a stable AppImage. This setting must match the installed build and does not switch its release channel.",
+              )
+            : t(
+                "Receive early builds with the newest fixes before they reach the stable release. Betas can be rough around the edges; switch this off to return to stable at the next update.",
+              )
+        }
         leading={
           <span
             className={`flex h-9 w-9 items-center justify-center rounded-md ${
@@ -97,7 +104,9 @@ export function UpdatesRow() {
     u.intent === "return-beta"
       ? t("Continue the return to beta in Experimental builds below.")
       : u.status === "checking"
-        ? t("Checking harborcommunity.site for a newer build.")
+        ? isLinuxDesktop()
+          ? t("Checking the configured Linux update feed for a newer build.")
+          : t("Checking harborcommunity.site for a newer build.")
         : u.status === "downloading"
           ? t("Downloading {pct}%", { pct: Math.round(u.progress * 100) })
           : u.status === "downloaded"

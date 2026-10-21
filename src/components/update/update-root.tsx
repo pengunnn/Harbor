@@ -8,7 +8,6 @@ import {
   updateAvailable,
   useUpdate,
 } from "@/lib/updater/use-update";
-import { isLinuxDesktop } from "@/lib/platform";
 import { useT } from "@/lib/i18n";
 import { UpdateCard } from "./update-card";
 
@@ -37,7 +36,6 @@ export function UpdateRoot() {
   const [autoHidden, setAutoHidden] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isLinuxDesktop()) return;
     startUpdateWatcher();
   }, []);
 
@@ -58,7 +56,6 @@ export function UpdateRoot() {
     return () => window.clearTimeout(id);
   }, [pillVisible, u.status, u.version]);
 
-  if (isLinuxDesktop()) return null;
   // Explicit returns stay in their settings confirmation, never in an
   // "update available" toast with the ordinary retry/manual-download actions.
   if (u.intent === "return-beta" && u.status !== "error") return null;
