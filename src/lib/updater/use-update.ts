@@ -40,6 +40,11 @@ import {
   stageHandoff,
   type HandoffPlan,
 } from "./handoff";
+import {
+  createLinuxUpdateHandle,
+  LinuxDeltaError,
+  type LinuxDeltaPhase,
+} from "./linux-delta";
 
 const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const DISMISS_KEY = "harbor.update.dismissed";
@@ -68,6 +73,9 @@ export type UpdateState = {
   progress: number;
   downloadedBytes: number;
   totalBytes: number;
+  linuxDeltaPhase: LinuxDeltaPhase | "preparing" | "cancelling" | null;
+  linuxFullDownloadAvailable: boolean;
+  linuxRestartRequired: boolean;
   error: string | null;
   installFailed: boolean;
   manualCheck: boolean;
@@ -96,6 +104,9 @@ let state: UpdateState = {
   progress: 0,
   downloadedBytes: 0,
   totalBytes: 0,
+  linuxDeltaPhase: null,
+  linuxFullDownloadAvailable: false,
+  linuxRestartRequired: false,
   error: null,
   installFailed: false,
   manualCheck: false,
@@ -111,6 +122,11 @@ type UpdateHandle = {
   download: (onEvent: (e: DownloadEvent) => void) => Promise<void>;
   install: () => Promise<void>;
   close: () => Promise<void>;
+  linuxDelta?: {
+    download: (onPhase: (phase: LinuxDeltaPhase) => void) => Promise<void>;
+    cancel: () => Promise<void>;
+    isInstalled: () => boolean;
+  };
 };
 
 type DownloadEvent =
@@ -177,6 +193,9 @@ function revokeExperimentalAccess(): void {
     progress: 0,
     downloadedBytes: 0,
     totalBytes: 0,
+    linuxDeltaPhase: null,
+    linuxFullDownloadAvailable: false,
+    linuxRestartRequired: false,
     error: null,
     installFailed: false,
     manualCheck: false,
@@ -207,7 +226,11 @@ async function verifyExperimentalAction(
 }
 
 export function updateChannelLocked(): boolean {
-  return state.status === "downloading" || state.status === "installing";
+  return (
+    state.status === "downloading" ||
+    state.status === "installing" ||
+    state.linuxRestartRequired
+  );
 }
 
 export function setUpdateChannel(channel: UpdateChannel): boolean {
@@ -264,6 +287,10 @@ export async function checkForUpdate(manual = false): Promise<void> {
   // update and relaunch the user's separately installed release build instead
   // of this one. Never check for updates from a dev build.
   if (import.meta.env.DEV) return;
+  if (state.linuxRestartRequired) {
+    set({ panelOpen: true });
+    return;
+  }
   if (
     state.status === "checking" ||
     state.status === "downloading" ||
@@ -326,7 +353,8 @@ export async function checkForUpdate(manual = false): Promise<void> {
         return;
       }
 
-      candidate = (await check({ timeout: 15_000 })) as UpdateHandle | null;
+      const linuxUpdate = await check({ timeout: 15_000 });
+      candidate = linuxUpdate ? createLinuxUpdateHandle(linuxUpdate) : null;
       if (!currentRequest(request, selected)) return;
 
       if (!candidate) {
@@ -599,6 +627,188 @@ async function saveTransitionBackup(): Promise<void> {
   await invoke("handoff_save_backup", { content: JSON.stringify(backup) });
 }
 
+export function linuxDeltaStatusLabel(
+  phase: UpdateState["linuxDeltaPhase"],
+): string | null {
+  switch (phase) {
+    case "preparing":
+      return t("Preparing delta update…");
+    case "reconstructing":
+      return t("Reusing local data and downloading missing parts…");
+    case "verifying":
+      return t("Verifying update signature…");
+    case "ready":
+      return t("Update verified and ready to install.");
+    case "cancelling":
+      return t("Cancelling delta download…");
+    default:
+      return null;
+  }
+}
+
+async function downloadLinuxUpdate(
+  method: "delta" | "full",
+): Promise<void> {
+  if (import.meta.env.DEV || !IS_TAURI || !isLinuxDesktop()) return;
+
+  const update = handle;
+  const delta = update?.linuxDelta;
+
+  if (!update || !delta || state.linuxRestartRequired) return;
+
+  if (method === "delta") {
+    if (state.status !== "available") return;
+  } else {
+    if (
+      state.status !== "error" ||
+      !state.linuxFullDownloadAvailable
+    ) {
+      return;
+    }
+  }
+
+  const request = revision;
+  const selected = checkedChannel;
+
+  if (!currentRequest(request, selected)) {
+    clearStagedUpdate();
+    return;
+  }
+
+  const isCurrent = () =>
+    handle === update && currentRequest(request, selected);
+
+  set({
+    status: "downloading",
+    progress: 0,
+    downloadedBytes: 0,
+    totalBytes: 0,
+    error: null,
+    installFailed: false,
+    linuxDeltaPhase: method === "delta" ? "preparing" : null,
+    linuxFullDownloadAvailable: false,
+  });
+
+  try {
+    if (method === "delta") {
+      await delta.download((phase) => {
+        if (!isCurrent() || state.linuxDeltaPhase === "cancelling") {
+          return;
+        }
+
+        set({ linuxDeltaPhase: phase });
+      });
+    } else {
+      let total = 0;
+      let received = 0;
+
+      await update.download((event) => {
+        if (!isCurrent()) return;
+
+        if (event.event === "Started") {
+          total = event.data?.contentLength ?? 0;
+          set({ totalBytes: total });
+        } else if (event.event === "Progress") {
+          received += event.data?.chunkLength ?? 0;
+
+          set({
+            downloadedBytes: received,
+            progress: total > 0 ? Math.min(1, received / total) : 0,
+          });
+        }
+      });
+    }
+
+    if (!isCurrent()) return;
+
+    set({
+      status: "downloaded",
+      progress: 1,
+      linuxDeltaPhase: method === "delta" ? "ready" : null,
+    });
+  } catch (error) {
+    if (!isCurrent()) return;
+
+    const kind = error instanceof LinuxDeltaError ? error.kind : null;
+
+    if (kind === "cancelled") {
+      set({
+        status: "available",
+        progress: 0,
+        downloadedBytes: 0,
+        totalBytes: 0,
+        error: null,
+        linuxDeltaPhase: null,
+        linuxFullDownloadAvailable: false,
+      });
+      return;
+    }
+
+    const canOfferFullDownload =
+      method === "delta" &&
+      (kind === "unavailable" || kind === "helper" || kind === "transfer");
+
+    set({
+      status: "error",
+      error: error instanceof Error ? error.message : String(error),
+      linuxDeltaPhase: null,
+      linuxFullDownloadAvailable: canOfferFullDownload,
+      panelOpen: true,
+    });
+  } finally {
+    // Discard an invalidated download without overwriting a newer handle.
+    if (handle === update && !currentRequest(request, selected)) {
+      set({ status: "idle", linuxDeltaPhase: null });
+      clearStagedUpdate();
+    }
+  }
+}
+
+export async function downloadFullLinuxUpdate(): Promise<void> {
+  await downloadLinuxUpdate("full");
+}
+
+export async function cancelLinuxDeltaDownload(): Promise<void> {
+  if (import.meta.env.DEV || !IS_TAURI || !isLinuxDesktop()) return;
+
+  const update = handle;
+  const delta = update?.linuxDelta;
+
+  if (
+    !update ||
+    !delta ||
+    state.status !== "downloading" ||
+    state.linuxDeltaPhase === null ||
+    state.linuxDeltaPhase === "cancelling"
+  ) {
+    return;
+  }
+
+  const request = revision;
+  const selected = checkedChannel;
+
+  set({ linuxDeltaPhase: "cancelling" });
+
+  try {
+    await delta.cancel();
+  } catch (error) {
+    if (
+      handle !== update ||
+      !currentRequest(request, selected)
+    ) {
+      return;
+    }
+
+    set({
+      status: "error",
+      error: error instanceof Error ? error.message : String(error),
+      linuxDeltaPhase: null,
+      linuxFullDownloadAvailable: false,
+      panelOpen: true,
+    });
+  }
+}
+
 export async function downloadUpdate(): Promise<void> {
   if (import.meta.env.DEV) return;
   if (state.status !== "available") return;
@@ -613,6 +823,10 @@ export async function downloadUpdate(): Promise<void> {
     state.channel === "experimental" &&
     !(await verifyExperimentalAction(request, selected))
   ) {
+    return;
+  }
+  if (isLinuxDesktop() && handle?.linuxDelta) {
+    await downloadLinuxUpdate("delta");
     return;
   }
   const plan = state.handoff;
@@ -674,6 +888,27 @@ export async function downloadUpdate(): Promise<void> {
   } catch (e) {
     set({ status: "error", error: String(e) });
     if (!currentRequest(request, selected)) clearStagedUpdate();
+  }
+}
+
+export async function restartAfterLinuxUpdate(): Promise<void> {
+  if (import.meta.env.DEV || !IS_TAURI || !isLinuxDesktop()) return;
+  if (!state.linuxRestartRequired || state.status === "installing") return;
+
+  set({ status: "installing", error: null });
+
+  try {
+    const { relaunch } = await import("@tauri-apps/plugin-process");
+    await relaunch();
+  } catch {
+    set({
+      status: "error",
+      error: t(
+        "The update is installed. Close Harbor completely and reopen your AppImage to finish.",
+      ),
+      installFailed: false,
+      panelOpen: true,
+    });
   }
 }
 
@@ -747,14 +982,16 @@ export async function installUpdate(): Promise<void> {
     }
     return;
   }
-  if (!handle) return;
+  const installingUpdate = handle;
+  if (!installingUpdate) return;
+
   set({ status: "installing", error: null, installFailed: false });
   try {
     try {
       localStorage.setItem(
         PENDING_KEY,
         JSON.stringify({
-          version: handle.version,
+          version: installingUpdate.version,
           channel: state.channel,
           buildId: state.buildId,
           at: Date.now(),
@@ -777,11 +1014,34 @@ export async function installUpdate(): Promise<void> {
       clearStagedUpdate();
       return;
     }
-    await handle.install();
+    await installingUpdate.install();
     const { relaunch } = await import("@tauri-apps/plugin-process");
     await relaunch();
   } catch (e) {
-    set({ status: "error", error: String(e), installFailed: true, panelOpen: true });
+    if (
+      isLinuxDesktop() &&
+      installingUpdate.linuxDelta?.isInstalled()
+    ) {
+      set({
+        status: "error",
+        error: t(
+          "The update was installed, but Harbor could not restart. Restart Harbor to finish.",
+        ),
+        installFailed: false,
+        linuxRestartRequired: true,
+        linuxFullDownloadAvailable: false,
+        linuxDeltaPhase: null,
+        panelOpen: true,
+      });
+      return;
+    }
+
+    set({
+      status: "error",
+      error: String(e),
+      installFailed: true,
+      panelOpen: true,
+    });
   }
 }
 
@@ -1025,6 +1285,9 @@ export function clearStagedUpdate(): void {
     progress: 0,
     downloadedBytes: 0,
     totalBytes: 0,
+    linuxDeltaPhase: null,
+    linuxFullDownloadAvailable: false,
+    linuxRestartRequired: false,
     error: null,
     panelOpen: false,
     handoff: null,

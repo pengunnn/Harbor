@@ -7,6 +7,7 @@ import {
   startUpdateWatcher,
   updateAvailable,
   useUpdate,
+  linuxDeltaStatusLabel,
 } from "@/lib/updater/use-update";
 import { useT } from "@/lib/i18n";
 import { UpdateCard } from "./update-card";
@@ -65,7 +66,8 @@ export function UpdateRoot() {
 
   const label =
     u.status === "downloading"
-      ? t("Downloading {pct}%", { pct: Math.round(u.progress * 100) })
+      ? (linuxDeltaStatusLabel(u.linuxDeltaPhase) ??
+        t("Downloading {pct}%", { pct: Math.round(u.progress * 100) }))
       : u.status === "downloaded"
         ? t("Restart to update")
         : t("Update ready");

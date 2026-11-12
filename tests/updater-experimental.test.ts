@@ -23,9 +23,12 @@ function load<T>(
   mocks: Record<string, unknown>,
   globals: Record<string, unknown>,
 ): T {
-  const source = readFileSync(new URL(`../${path}`, import.meta.url), "utf8").replaceAll(
-    "import.meta.env.DEV",
-    String(globals.__DEV__ === true),
+  const source = readFileSync(
+    new URL(`../${path}`, import.meta.url),
+    "utf8",
+  ).replaceAll(
+    "import.meta.env",
+    `(${JSON.stringify({ DEV: globals.__DEV__ === true })})`,
   );
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
@@ -267,6 +270,24 @@ function harness(
   const updater = load<Updater>(
     "src/lib/updater/use-update.ts",
     {
+      "@/lib/platform": {
+        isLinuxDesktop: () => options.platform?.startsWith("linux-") === true,
+      },
+      "./linux-delta": {
+        LinuxDeltaError: class extends Error {
+          constructor(
+            public readonly kind: string,
+            message: string,
+          ) {
+            super(message);
+          }
+        },
+        createLinuxUpdateHandle() {
+          throw new Error(
+            "Unexpected Linux delta route in the existing updater regression suite.",
+          );
+        },
+      },
       "@/lib/context-review": { isContextReview: () => options.contextReview === true },
       react: { useSyncExternalStore: (_subscribe: unknown, snapshot: () => unknown) => snapshot() },
       "@tauri-apps/plugin-updater": {
@@ -803,11 +824,24 @@ test("manual Mac download selects the native architecture regardless of manifest
 });
 
 test("missing native platform opens the download site instead of another architecture or OS", async () => {
-  for (const platform of ["darwin-x86_64", "windows-aarch64", "linux-x86_64"]) {
+  for (const platform of ["darwin-x86_64", "windows-aarch64"]) {
     const h = harness({ beta: true, platform });
     await h.updater.openManualDownload();
     assert.deepEqual(h.calls.manualUrls, ["https://example.test"], platform);
   }
+});
+
+test("Linux without a configured download repository does not open another platform's download page", async () => {
+  const h = harness({ beta: true, platform: "linux-x86_64" });
+
+  await h.updater.openManualDownload();
+
+  assert.deepEqual(h.calls.manualUrls, []);
+  assert.equal(h.updater.useUpdate().status, "unavailable");
+  assert.equal(
+    h.updater.useUpdate().error,
+    "This Linux build has no configured manual download page.",
+  );
 });
 
 test("manual download uses the native platform rather than the WebView user agent", async () => {

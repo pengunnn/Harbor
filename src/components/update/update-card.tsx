@@ -18,11 +18,16 @@ import {
   openManualDownload,
   openHandoffDownload,
   useUpdate,
+  linuxDeltaStatusLabel,
+  cancelLinuxDeltaDownload,
+  downloadFullLinuxUpdate,
+  restartAfterLinuxUpdate,
 } from "@/lib/updater/use-update";
 import { releaseNote, type ReleaseNote } from "@/lib/updater/release-notes";
 import { useT } from "@/lib/i18n";
 import { RichNote } from "./rich-notes";
 import { experimentalReleaseNote } from "@/lib/updater/experimental-notes";
+import { isLinuxDesktop } from "@/lib/platform";
 
 function mb(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -83,7 +88,7 @@ export function UpdateCard() {
                   : u.status === "installing"
                     ? t("update.installing")
                     : u.status === "downloading"
-                      ? t("update.downloading")
+                      ? (linuxDeltaStatusLabel(u.linuxDeltaPhase) ?? t("update.downloading"))
                       : u.status === "error"
                         ? u.installFailed
                           ? t("Finish updating Harbor")
@@ -147,7 +152,13 @@ export function UpdateCard() {
                 className={`h-full rounded-full bg-accent transition-[width] duration-300 ${
                   u.status === "downloading" && !determinate ? "w-2/5 animate-pulse" : ""
                 }`}
-                style={determinate ? { width: `${Math.max(4, pct)}%` } : undefined}
+                style={
+                  u.status === "downloaded"
+                    ? { width: "100%" }
+                    : determinate
+                      ? { width: `${Math.max(4, pct)}%` }
+                      : undefined
+                }
               />
             </div>
             <div className="mt-1.5 flex items-center justify-between text-[11.5px] text-ink-subtle">
@@ -159,7 +170,7 @@ export function UpdateCard() {
                         downloaded: mb(u.downloadedBytes),
                         total: mb(u.totalBytes),
                       })
-                    : t("update.fetching")}
+                    : (linuxDeltaStatusLabel(u.linuxDeltaPhase) ?? t("update.fetching"))}
               </span>
               {u.status === "downloading" && determinate && <span>{pct}%</span>}
             </div>
@@ -169,10 +180,21 @@ export function UpdateCard() {
         {u.status === "error" && (
           <div className="mx-5 mb-1 rounded-xl border border-danger/40 bg-danger/10 px-3.5 py-3 text-[12.5px] leading-relaxed text-ink-muted">
             {u.error ?? t("update.errorServer")}
-            {u.installFailed && u.channel !== "experimental" && u.intent !== "return-beta" && (
+            {u.linuxFullDownloadAvailable && (
               <span className="mt-1.5 block text-ink-subtle">
                 {t(
-                  "Download and run the installer to finish updating. If it keeps failing, run it as administrator once.",
+                  "You can download the full AppImage instead.",
+                )}
+              </span>
+            )}
+            {u.installFailed && u.channel !== "experimental" && u.intent !== "return-beta" && (
+              <span className="mt-1.5 block text-ink-subtle">
+                {isLinuxDesktop()
+                  ? t(
+                      "Check that your AppImage's folder is writable and has enough free space. You can also download a new AppImage manually.",
+                    )
+                  : t(
+                      "Download and run the installer to finish updating. If it keeps failing, run it as administrator once.",
                 )}
               </span>
             )}
@@ -210,7 +232,17 @@ export function UpdateCard() {
           {u.status === "error" && (
             <>
               <GhostButton onClick={closeUpdatePanel}>{t("common.close")}</GhostButton>
-              {u.intent === "return-beta" ? null : u.installFailed &&
+              {u.linuxRestartRequired ? (
+                <PrimaryButton onClick={() => void restartAfterLinuxUpdate()}>
+                  <RotateCw size={16} strokeWidth={2.2} />
+                  {t("Restart Harbor")}
+                </PrimaryButton>
+              ) : u.linuxFullDownloadAvailable ? (
+                <PrimaryButton onClick={() => void downloadFullLinuxUpdate()}>
+                  <Download size={16} strokeWidth={2.2} />
+                  {t("Download full AppImage")}
+                </PrimaryButton>
+              ) : u.intent === "return-beta" ? null : u.installFailed &&
                 u.channel !== "experimental" ? (
                 <PrimaryButton
                   onClick={() => void (u.handoff ? openHandoffDownload() : openManualDownload())}
@@ -224,6 +256,13 @@ export function UpdateCard() {
               )}
             </>
           )}
+          {u.status === "downloading" &&
+            u.linuxDeltaPhase !== null &&
+            u.linuxDeltaPhase !== "cancelling" && (
+              <GhostButton onClick={() => void cancelLinuxDeltaDownload()}>
+                {t("Cancel")}
+              </GhostButton>
+            )}
           {u.status === "downloading" && (
             <span className="flex items-center gap-1.5 text-[12px] text-ink-subtle">
               <Check size={14} strokeWidth={2.4} className="text-accent" /> {t("update.keepUsing")}

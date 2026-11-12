@@ -98,6 +98,8 @@ mod install_features;
 mod installer_handoff;
 #[cfg(desktop)]
 mod update_platform;
+#[cfg(target_os = "linux")]
+mod linux_updater;
 #[cfg(desktop)]
 mod media_controls;
 mod modal_overlay;
@@ -1273,6 +1275,14 @@ pub fn run() {
         })
         .invoke_handler(desktop_invoke_handler(tauri::generate_handler![
             update_platform::updater_package_kind,
+            #[cfg(target_os = "linux")]
+            update_platform::updater_delta_available,
+            #[cfg(target_os = "linux")]
+            update_platform::updater_delta_create,
+            #[cfg(target_os = "linux")]
+            update_platform::updater_delta_download,
+            #[cfg(target_os = "linux")]
+            update_platform::updater_delta_install,
             games::games_pokemon,
             games::games_scan_steam,
             games::steam_shortcut_commands::games_scan_steam_shortcuts,

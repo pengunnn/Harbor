@@ -23,6 +23,7 @@ import {
   openUpdatePanel,
   updateAvailable,
   useUpdate,
+  linuxDeltaStatusLabel,
 } from "@/lib/updater/use-update";
 import { IS_BETA_BUILD } from "@/lib/build-info";
 import { useT } from "@/lib/i18n";
@@ -108,7 +109,8 @@ export function UpdatesRow() {
           ? t("Checking the configured Linux update feed for a newer build.")
           : t("Checking harborcommunity.site for a newer build.")
         : u.status === "downloading"
-          ? t("Downloading {pct}%", { pct: Math.round(u.progress * 100) })
+          ? (linuxDeltaStatusLabel(u.linuxDeltaPhase) ??
+            t("Downloading {pct}%", { pct: Math.round(u.progress * 100) }))
           : u.status === "downloaded"
             ? t("Downloaded. Ready to install and restart.")
             : u.status === "installing"
@@ -121,9 +123,11 @@ export function UpdatesRow() {
                     ? u.channel === "experimental"
                       ? t("No newer experimental build is available for this device.")
                       : t("You're on the latest version.")
-                    : u.status === "error" && u.manualCheck
-                      ? t("Couldn't reach the update server. Try again in a moment.")
-                      : t("Harbor checks automatically every few hours.");
+                      : u.status === "error" && isLinuxDesktop()
+                        ? (u.error ?? t("The update could not be completed."))
+                        : u.status === "error" && u.manualCheck
+                          ? t("Couldn't reach the update server. Try again in a moment.")
+                          : t("Harbor checks automatically every few hours.");
   return (
     <SettingRow
       icon={
